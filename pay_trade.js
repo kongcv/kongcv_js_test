@@ -12,7 +12,7 @@ var JPush_production = false;
 var ERROR_MSG = {
     'ERR_MODE_MUST_EXIST' : '{"state":"error", "code":12, "error":"停车模式不存在"}',
     'ERR_SYSTEM_TRADE' : '{"state":"error", "code":20, "error":"系统交易数据错误"}',
-    'ERR_MONEY_MUST_EXIST' : '{"state":"error", "code":38, "error":"体现数不能为空"}',
+    'ERR_MONEY_MUST_EXIST' : '{"state":"error", "code":38, "error":"金额数不能为空"}',
     'ERR_BILL_ID_MUST_EXIST' : '{"state":"error", "code":42, "error":"支付帐单id必须存在"}',
     'ERR_PAY_TOOL_MUST_EXIST' : '{"state":"error", "code":43, "error":"支付工具必须存在"}',
     'ERR_PAY_ID_MUST_EXIST' : '{"state":"error", "code":44, "error":"支付ID必须存在"}',
@@ -22,6 +22,7 @@ var ERROR_MSG = {
     'ERR_PAY_TOOL_MUST_SAME' : '{"state":"error", "code":48, "error":"支付工具必须一致"}',
     'ERR_PAY_TYPE_FORMAT' : '{"state":"error", "code":49, "error":"支付类型格式错误"}',
     'ERR_PAY_TRADE_FINISH' : '{"state":"error", "code":49, "error":"支付交易已完成"}',
+    'ERR_COUPON_DESTROY_FAIL' : '{"state":"error", "code":49, "error":"优惠卷删除失败"}',
 };
 
 var RESULT_MSG = {
@@ -32,6 +33,7 @@ var RESULT_MSG = {
 var kongcv_trade_bill_cls = AV.Object.extend("kongcv_trade_bill");
 var kongcv_purse_cls = AV.Object.extend("kongcv_purse");
 var kongcv_log_trade_cls = AV.Object.extend("kongcv_log_trade");
+var kongcv_user_coupon_cls = AV.Object.extend("kongcv_user_coupon");
 var kongcv_rate = 1;
 var limit_price = 10;
 
@@ -44,7 +46,7 @@ var limit_price = 10;
  *           RET_ERROR - system error
  *           {"code":601,"error":"xxxxxx"}
  */
-exports._kongcv_insert_trade_log = function(bill_id, request, log) {
+exports.kongcv_insert_trade_log = function(bill_id, request, log) {
     var kongcv_log_trade_obj = new kongcv_log_trade_cls();
 
     if (typeof(bill_id) != "undefined" && bill_id.length > 0) {
@@ -96,8 +98,26 @@ var _kongcv_insert_trade_log = function(bill_id, request, log) {
 };
 
 /**
+ * brief   : remove user coupon
+ */
+var _kongcv_remove_coupon = function(coupon_id, bill_id, request) {
+    var coupon_obj = new kongcv_user_coupon_cls();
+    coupon_obj.id = coupon_id;
+    
+    coupon_obj.destroy().then(
+        function(obj) {
+        },
+        function(error) {
+            console.log("kongcv_remove_coupon error:", ERROR_MSG.ERR_COUPON_DESTROY_FAIL);
+            _kongcv_insert_trade_log(bill_id, request, ERROR_MSG.ERR_COUPON_DESTROY_FAIL);
+            return;
+        }
+    );
+};
+
+/**
  * brief   : put trade bill
- * @param  : request - {"bill_id":"xxxxx","money":100,"pay_tool":"alipay","pay_id":"xxxx","notify_id":"xxxx","coupon":0,"pay_type":"xxxx","mode":"community"}
+ * @param  : request - {"bill_id":"xxxxx","money":100,"pay_tool":"alipay","pay_id":"xxxx","notify_id":"xxxx","coupon":0,"coupon_id":"xxxx","pay_type":"xxxx","mode":"community"}
  *           response - return result or error
  * @return : RET_OK - success
  *           {"result":"{\"state\":\"ok\",\"code\":1,\"msg\":\"成功}"}
@@ -106,6 +126,8 @@ var _kongcv_insert_trade_log = function(bill_id, request, log) {
  */
 exports.kongcv_put_trade_billdata = function(request) {
     console.log("invoke put trade_billdata");
+
+    console.log("trade_billdata:", request);
 
     var bill_id = request.bill_id;
     if (typeof(bill_id) == "undefined" || bill_id.length === 0) {
@@ -148,8 +170,17 @@ exports.kongcv_put_trade_billdata = function(request) {
         _kongcv_insert_trade_log(bill_id, request, ERROR_MSG.ERR_MODE_MUST_EXIST);
         return {"result":"error_msg","msg":ERROR_MSG.ERR_MODE_MUST_EXIST}
     }
+    if ("cb" === mode) {
+        console.log("mode change:", mode);
+        mode = "curb";
+    }
+    if ("cm" === mode) {
+        console.log("mode change:", mode);
+        mode = "community";
+    }
 
     var coupon = request.coupon;
+    var coupon_id = request.coupon_id;
 
     var kongcv_trade_bill_obj = new kongcv_trade_bill_cls();
     kongcv_trade_bill_obj.id = bill_id;
@@ -190,10 +221,13 @@ exports.kongcv_put_trade_billdata = function(request) {
                     if (trade_coupon > 0) {
                         _kongcv_insert_trade_log(bill_id, request, ERROR_MSG.ERR_COUPON_ONLY_ONE);
                     }
-                    else if (0 === trade_coupon){
-                        trade_obj.set("coupon", coupon);
-                        money += coupon;
-                    }
+                        
+                    trade_obj.set("coupon", coupon);
+                    money += coupon;
+                }
+                
+                if (typeof(coupon_id) != "undefined" && coupon_id.length > 0) {
+                    _kongcv_remove_coupon(coupon_id, bill_id, request);
                 }
             }
             else {
@@ -215,8 +249,10 @@ exports.kongcv_put_trade_billdata = function(request) {
             bill_obj.set("pay_type", pay_type);
             bill_obj.set("pay_state", 1);
             if (typeof(coupon) != "undefined" && coupon > 0) {
+                console.log("bill save coupon:", coupon);
                 bill_obj.set("coupon", coupon);
             }
+            console.log("bill_obj:",bill_obj);
 
             bill_obj.save().then(
                 function(result) { 
@@ -234,7 +270,10 @@ exports.kongcv_put_trade_billdata = function(request) {
                         trade_obj.set("handsel_state", 1);
                     }
                     else if ("balance" === pay_type) {
-                        trade_obj.increment("money", money);
+                        var tmp_trade_money = trade_obj.get("money");
+                        var tmp_new_trade_money = tmp_trade_money + money;
+                        trade_obj.set("money", Number(tmp_new_trade_money.toFixed(2)));
+                        //trade_obj.increment("money", money);
                         trade_obj.set("balance", money);
                         trade_obj.set("pay_state", 2);
                         trade_obj.set("trade_state", 1);
@@ -304,8 +343,14 @@ exports.kongcv_put_trade_billdata = function(request) {
                                         else {
                                             own_trade_money = Number(own_trade_money.toFixed(2));
                                         }
-                                        hirer_purse_obj.increment("amount", own_trade_money);
-                                        hirer_purse_obj.increment("money", own_trade_money);
+                                        var tmp_purse_amount = hirer_purse_obj.get("amount");
+                                        var tmp_purse_money = hirer_purse_obj.get("money");
+                                        var tmp_new_purse_amount = tmp_purse_amount + own_trade_money;
+                                        var tmp_new_purse_money = tmp_purse_money + own_trade_money;
+                                        hirer_purse_obj.set("amount", Number(tmp_new_purse_amount.toFixed(2)));
+                                        hirer_purse_obj.set("money", Number(tmp_new_purse_money.toFixed(2)));
+                                        //hirer_purse_obj.increment("amount", own_trade_money);
+                                        //hirer_purse_obj.increment("money", own_trade_money);
 
                                         hirer_purse_obj.save().then(
                                             function(hirer_purse_obj) {
@@ -337,7 +382,10 @@ exports.kongcv_put_trade_billdata = function(request) {
                                             user_purse_obj.set("user", user_obj);
                                         }
 
-                                        user_purse_obj.increment("expense", trade_money);
+                                        var tmp_purse_expense = user_purse_obj.get("expense");
+                                        var tmp_new_purse_expense = tmp_purse_expense + trade_money;
+                                        user_purse_obj.set("expense", Number(tmp_new_purse_expense.toFixed(2)));
+                                        //user_purse_obj.increment("expense", trade_money);
 
                                         user_purse_obj.save().then(
                                             function(user_purse_obj) {
@@ -418,7 +466,24 @@ exports.kongcv_trade_jpush_message_p2p = function(mobile, device_token, device_t
     var push_info = "你好,你已收到支付费用,收费金额是";
     var price_info = price + "元";
     push_info += price_info;
-    
+
+    if (mobile != undefined && mobile.length > 0) {
+        _kongcv_sms_send(mobile, "charge_info", price);
+    }
+    else {
+        console.log("kongcv_trade_jpush_push_message_p2p:","no mobile");
+    }
+
+    if ((device_token == undefined || 0 === device_token.length) && (device_type == undefined || 0 === device_type.length)) {
+        console.log("kongcv_trade_jpush_push_message_p2p:","no device token");
+        return;
+    }
+
+    if ("ad" === device_type) {
+        console.log("devict_type change:",device_type);
+        device_type = "android";
+    }
+
     var extras = {'push_type':'charge_info'};
     if ("ios" === device_type) {
         device_notify = JPush.ios(push_info, 'happy', 1, true, extras);
@@ -450,8 +515,6 @@ exports.kongcv_trade_jpush_message_p2p = function(mobile, device_token, device_t
                     return;
                 }
             }*/
-
-            _kongcv_sms_send(mobile, "charge_info", price);
         }
     });
 };
